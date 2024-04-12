@@ -1,0 +1,293 @@
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+
+// defining I/O pins
+#define t1out 23  // T1 digital out pin
+#define t2in 18   // T2 digital in pin
+#define t3in 19   // T3 digital in pin
+#define ANALOG_PIN 14   // Analog input pin for ESP32
+#define LED_PIN 21     // LED output pin for ESP32
+#define t7in 15   // T7 digital in pin
+#define t7out 16  // T7 digital out pin
+#define SAMPLES_NUM 10    // Number of samples for averaging
+#define LED_THRESHOLD 2047 // Threshold for LED activation
+
+#define SAMPLES_NUM 10    // Number of samples for averaging
+#define LED_THRESHOLD 2047 // Threshold for LED activation
+
+
+QueueHandle_t buttonQueue;
+// variables for timing using micros()
+unsigned long tm;
+unsigned long newtm;
+SemaphoreHandle_t frequencySemaphore;
+volatile unsigned long freqHighTask2;
+volatile unsigned long freqHighTask3;
+
+// freqency calculation on Task2 & 3 square waves
+volatile unsigned long freqhigh;
+volatile int freq1;
+volatile int freq2;
+int mapf1;
+int mapf2;
+
+// Task4 avg analogue value calculation
+int a[10];
+volatile int counter = 0;
+int avg = 0;
+
+char buffer[100];
+int buffer_flag = 0;
+
+struct FrequencyData {
+  int freq2;
+  int freq3;
+} frequencyData;
+
+void Task1(void *pvParameters)
+{
+    while (1)
+    {
+        // Task1 pulse sequence
+        digitalWrite(t1out, HIGH);
+        delayMicroseconds(180);
+        digitalWrite(t1out, LOW);
+        delayMicroseconds(40);
+        digitalWrite(t1out, HIGH);
+        delayMicroseconds(530);
+        digitalWrite(t1out, LOW);
+        delayMicroseconds(250);
+        vTaskDelay(3 / portTICK_PERIOD_MS);
+    }
+}
+
+int pulse_m(int pin, int state, int timeout)
+{
+    tm = micros();
+    while (digitalRead(pin) != state)
+    {
+        if (micros() - tm > timeout)
+        {
+            return 0;
+        }
+    }
+    newtm = micros();
+    while (digitalRead(pin) == state)
+    {
+        if (micros() - newtm > timeout)
+        {
+            return 0;
+        }
+    }
+    return micros() - tm;
+}
+
+void Task2(void *pvParameters) {
+    const TickType_t xDelay = 20 / portTICK_PERIOD_MS;
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+
+    while (1) {
+      freqhigh = pulseIn(t2in, HIGH, 3000);
+      if(freqhigh > 0) {
+      int tempFreq = 1000000 / (freqhigh * 2);
+        if (xSemaphoreTake(frequencySemaphore, portMAX_DELAY) == pdTRUE) {
+          frequencyData.freq2 = tempFreq;
+          xSemaphoreGive(frequencySemaphore); // Modification complete, release semaphore
+
+        }
+      }
+
+      vTaskDelayUntil(&xLastWakeTime, xDelay);
+    } 
+}
+
+void Task3(void *pvParameters) {
+  const TickType_t xDelay = 8 / portTICK_PERIOD_MS; // Executed every 8ms 
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+
+  while (1) {
+    unsigned long freqHigh = pulseIn(t3in, HIGH, 3000); // Use 3000 microseconds as a timeout
+      if(freqHigh > 0) {
+       int tempFreq = 1000000 / (freqHigh * 2); // Calculation of frequency using temporary variables
+
+        if (xSemaphoreTake(frequencySemaphore, portMAX_DELAY) == pdTRUE) {
+          frequencyData.freq3 = tempFreq; 
+          xSemaphoreGive(frequencySemaphore); 
+        }
+      } else {
+      }
+
+    vTaskDelayUntil(&xLastWakeTime, xDelay);
+  }
+}
+
+
+void Task4(void *pvParameters) {
+    int readings[SAMPLES_NUM] = {0}; // Array to store readings
+    int readIndex = 0;              // Index for current reading
+    int total = 0;                  // Sum of readings
+    int average = 0;                // Average of readings
+
+    pinMode(LED_PIN, OUTPUT);  // Configure the LED pin as an output
+
+    while (1) {
+        int newReading = analogRead(ANALOG_PIN); // Read new value from ADC
+        total = total - readings[readIndex] + newReading;
+        readings[readIndex] = newReading; // Store the new reading in the array
+
+        average = total / SAMPLES_NUM; // Calculate the moving average
+
+        // Reset the index to loop over the array
+        readIndex = (readIndex + 1) % SAMPLES_NUM;
+
+        // Turn the LED on or off based on the average value
+        if (average > LED_THRESHOLD) {
+            digitalWrite(LED_PIN, HIGH); // Set LED ON
+        } else {
+            digitalWrite(LED_PIN, LOW); // Set LED OFF
+        }
+
+        // Maintain a 50Hz rate as specified
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    // Normally this line is never reached
+    vTaskDelete(NULL);
+}
+
+int map_edge(int x, int in_min, int in_max, int out_min, int out_max)
+{
+    if (x < in_min)
+    {
+       return out_min;
+    }
+    if (x > in_max)
+    {
+       return out_max;
+    }
+    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+void Task5(void *pvParameters)
+{
+    // Task5 print T2 & 3 values
+    // HardwareSerial *Serial = (HardwareSerial *)pvParameters;
+    // 10hz
+    while (1)
+    {
+        freq1=frequencyData.freq2;
+        freq2=frequencyData.freq3;
+        mapf1 = map_edge(freq1, 333, 1000, 0, 99);
+        mapf2 = map_edge(freq2, 500, 1000, 0, 99);
+        sprintf(buffer, " %d ,  %d \n", mapf1, mapf2);
+        buffer_flag = 1;
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+    }
+    vTaskDelete(NULL);
+}
+
+// }
+
+void task7(void *pvParameters) {
+    int lastButtonState = HIGH;  
+    int currentButtonState = HIGH;
+    int msg = 1;  
+
+    while (1) {
+        currentButtonState = digitalRead(t7in);
+        vTaskDelay(50 / portTICK_PERIOD_MS);
+        if (currentButtonState == LOW && lastButtonState == HIGH) 
+        {   
+            vTaskDelay(50 / portTICK_PERIOD_MS);
+            xQueueSend(buttonQueue, &msg, portMAX_DELAY);
+        }
+
+        lastButtonState = currentButtonState;
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+}
+
+void ledControlTask(void *pvParameters) {
+    int ledState = LOW;
+    int msg;
+
+    while (1) 
+    {
+        if (xQueueReceive(buttonQueue, &msg, portMAX_DELAY) == pdPASS) {
+            ledState = !ledState;
+            digitalWrite(t7out, ledState);
+        }
+    }
+}
+
+
+void CPU_work(int time_ms) {
+    volatile int dummy = 0;  // Using volatile to prevent compiler optimisation
+    long iterations = time_ms * 1000;  //  Assume each iteration is about 1 microsecond
+
+    // The loop body needs to be adjusted according to the actual CPU speed and the actual needs of the task.
+    for (long i = 0; i < iterations; i++) {
+        dummy += i;  // Simple calculation operations to consume time
+    }
+}
+
+void somePeriodicTask(void *pvParameters) {
+    const TickType_t xDelay = 20 / portTICK_PERIOD_MS;  // Cyclic tasks with a 20 ms cycle time
+    TickType_t xLastWakeTime = xTaskGetTickCount();  // Get the current tick count
+
+    while (1) {
+        CPU_work(2);  // Keeps the CPU busy for about 2 milliseconds
+
+        // Waiting for the next cycle, which keeps the task executing cyclically
+        vTaskDelayUntil(&xLastWakeTime, xDelay);
+    }
+}
+
+void app_main() {
+    xTaskCreate(somePeriodicTask, "Periodic Task", 2048, NULL, 1, NULL);
+    vTaskStartScheduler();
+}
+
+void setup()
+{
+
+    Serial.begin(9600);
+    frequencySemaphore = xSemaphoreCreateMutex();
+    if(frequencySemaphore==NULL){
+      Serial.println("fail");
+    }
+    buttonQueue = xQueueCreate(10, sizeof(int));
+    if (buttonQueue == NULL) {
+        Serial.println("Queue creation failed");
+    }
+
+    pinMode(t1out, OUTPUT);
+    
+    pinMode(t7out, OUTPUT);
+
+    pinMode(t2in, INPUT);
+    pinMode(t3in, INPUT);
+
+    ledcSetup(0, 700, 8);
+    ledcAttachPin(38, 0);
+    ledcWrite(0, 128);
+
+
+    xTaskCreate(Task1, "Task1", 4096, NULL, 3, NULL);
+    xTaskCreate(Task2, "Task2", 4096, NULL, 2, NULL);
+    xTaskCreate(Task3, "Task3", 4096, NULL, 2, NULL);
+    xTaskCreate(Task4, "Task4", 4096, NULL, 2, NULL);
+    xTaskCreate(Task5, "Task5", 4096, NULL, 1, NULL);
+    xTaskCreate(task7, "ButtonTask", 1024, NULL, 1, NULL);
+    xTaskCreate(ledControlTask, "LEDControlTask", 1024, NULL, 1, NULL);
+}
+
+void loop()
+{
+    vTaskDelay(1 / portTICK_PERIOD_MS);
+    if (buffer_flag == 1)
+    {
+        Serial.print(buffer);
+        buffer_flag = 0;
+    }
+}
