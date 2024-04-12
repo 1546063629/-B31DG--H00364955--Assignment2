@@ -276,7 +276,7 @@ void setup()
     xTaskCreate(Task1, "Task1", 4096, NULL, 3, NULL);
     xTaskCreate(Task2, "Task2", 4096, NULL, 2, NULL);
     xTaskCreate(Task3, "Task3", 4096, NULL, 2, NULL);
-    xTaskCreate(Task4, "Task4", 4096, NULL, 2, NULL);
+    xTaskCreate(Task4, "Task4", 4096, NULL, 1, NULL);
     xTaskCreate(Task5, "Task5", 4096, NULL, 1, NULL);
     xTaskCreate(task7, "ButtonTask", 1024, NULL, 1, NULL);
     xTaskCreate(ledControlTask, "LEDControlTask", 1024, NULL, 1, NULL);
